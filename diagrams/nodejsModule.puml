@@ -1,0 +1,175 @@
+@startuml Nodejs Module call process
+skinparam classAttributeIconSize 0
+/'set namespaceSeparator :: '/
+/'set PLANTUML_LIMIT_SIZE=8192 '/
+/'scale 2000 width '/
+
+title
+<b><Sequence Diagram>
+Nodejs Module call process
+end title
+participant  "node.js" as nodejs
+participant "Function object\nNativeModule" as NativeModule
+ 
+participant "NativeModule instance\nof module.js" as Module
+participant "Function object\nModule" as FModule
+participant "Module instance\nof parent.js" as pModule
+
+participant "Module instance\nof child.js" as cModule
+note right of nodejs
+    source code:
+    parent.js
+        var child = require("./child.js");
+        child.childfn();
+
+    child.js
+        function childfn() {
+            console.log("this is child")
+        }
+        module.exports.childfn = childfn;
+    execution:
+    node parent.js
+end note
+/'
+note left of nodejs
+class Module {
+    static Module._contextLoad
+    static Module._cache
+    static Module._pathCache
+    static Module._extensions
+    static Module.globalPaths
+    static Module.wrapper
+    static Module.wrap
+    static Module._debug
+    static Module._realpathCache
+    static Module.Module
+    + id
+    + parent
+    + filename
+    + loaded
+    + children
+    + paths
+    
+    static Module._findPath(request, paths)
+    static Module._nodeModulePaths(from)
+    static Module._resolveLookupPaths(request, parent)
+    static Module._load(request, parent, isMain)
+    static Module._resolveFilename(request, parent)
+    static Module.runMain()
+    static Module._initPaths()
+    static Module.requireRepl()
+    + Module.prototype.load(filename)
+    + Module.prototype.require(path)
+    + Module.prototype._compile(content, filename)
+}
+end note
+'/
+nodejs -> nodejs : init function startup
+create NativeModule
+nodejs -> NativeModule : init function NativeModule
+nodejs <-- NativeModule 
+nodejs -> nodejs : startup()
+    activate nodejs
+    nodejs -> NativeModule : Module = NativeModule.require('module');
+        activate NativeModule
+        alt module cached
+            nodejs <- NativeModule : return cached.exports;
+        else module not cached
+            create Module
+            NativeModule -> Module : new NativeModule('modules')
+            Module -> Module :     this.filename = 'modules.js';\nthis.id = 'modules';\nthis.exports = {};\nthis.loaded = false;
+            NativeModule <-- Module : return nativeModule // instance
+            NativeModule -> Module : nativeModule.cache()
+            NativeModule -> Module : nativeModule.compile()
+                activate Module
+                Module -> Module : source=NativeModule.wrap("module.js") \n//this step will wrap source context with a function:\n(function(exports, require, module, ~__filename, ~__dirname){\n    context of modules.js\n})
+                Module -> Module : fn = runInThisContext(source, { filename: this.filename })\n//actuel run the wrapped source with nodejs buildin function\nvm.script.runInThisContext() and return a callable function fn
+                Module -> Module : execute function fn(this.exports, NativeModule.require, this, this.filename)\nwith parameter:\nfn(exports, require, module, ~__filename, ~__dirname)\nso that variables exports, require, module, ~__filename, ~__dirname\ncould be used inside of module.js directly.
+                    activate Module
+                    create FModule
+                    Module -> FModule : execute module.js \n//initialize function Module. \n//Note, this is not new(), but just initialize a function object Module \nand its "class methods"
+                    note right
+                        This function object will always exist 
+                        due to has been referanced by node.js 
+                        more info please refer closure feature    
+                    end note
+                    FModule -> FModule : var NativeModule = require('native_module');\nvar util = require('util');\nvar runInThisContext = require('vm').runInThisContext;\nvar runInNewContext = require('vm').runInNewContext;\nvar fs = require('fs');\n\nModule._cache = {};\n...
+                    FModule -> FModule : module.exports = Module; \n//add export to instance nativeModule
+
+                    Module <-- FModule
+                    deactivate Module
+                Module -> Module : this.loaded = true
+                NativeModule <-- Module
+                deactivate Module
+        nodejs <- NativeModule : return nativeModule.exports \n//from now on node.js will get the initialized \nfunction"Module" from module.js as variable Module. 
+        end
+        deactivate NativeModule
+    nodejs -> FModule : Module.runMain() \n//call Module's class methode runMain().\nThe main Main entry point to user program  
+        activate FModule
+        FModule -> FModule : Module._load(request=process.argv[1], parent=null, isMain=true); \n// load your js file, i.e parent.js here
+            activate FModule
+                FModule -> FModule : var filename = Module._resolveFilename(request, parent);\nvar cachedModule = Module._cache[filename];\n//function Module maintains all required modules in its _cache object\nlike {filename:module instance}, everytime a module is required,\nModule function will check if it can be found in its _cache,\nif yes return module.export at once,\nelse create a new module instance.
+                alt cachedModule exist
+                    FModule -> FModule : return cachedModule.exports;
+                else cachedModule do not exist
+                    create pModule
+                    FModule -> pModule : var module = new Module(id=filename, parent=parent);
+                    note right 
+                        var child = require("./child.js")
+                        child.childfn()
+                    end note
+                    pModule -> pModule : this.id = id;\nthis.exports = {};\nthis.parent = parent;
+                    FModule <-- pModule : return module
+                    FModule -> FModule : Module._cache[filename] = module; 
+                    FModule -> pModule : module.load(filename='parent.js');
+                        activate pModule
+                        pModule -> pModule : this.filename = filename;
+                        FModule <- pModule : Module._extensions[extension](this, filename);
+                        note left
+                            Module._extensions['.js'] = function(module, filename) {
+                            var content = fs.readFileSync(filename, 'utf8');
+                            module._compile(stripBOM(content), filename);
+                            };
+                        end note
+                        FModule --> pModule
+                        pModule -> pModule : var content = fs.readFileSync(filename, 'utf8');\nmodule._compile(stripBOM(content), filename);
+                            activate pModule
+                            pModule -> pModule : var self = this;\ninitialize function require
+                            FModule <- pModule : var wrapper = Module.wrap(content); \n//call class methode NativeModule.wrap\n//this step will wrap content context with a function:\n(function(exports, require, module, ~__filename, ~__dirname){\n    context of content i.e parent.js\n})
+                            FModule --> pModule : return wrapper
+                            pModule -> pModule : var compiledWrapper = runInThisContext(wrapper, { filename: filename });\nvar args = [self.exports, require, self, filename, dirname];\nreturn compiledWrapper.apply(self.exports, args);
+                                activate pModule
+                                pModule -> pModule : execute\nfunction (module.exports, require, module, ~__filename, ~__dirname){\n    var child = require("./child.js");\n    child.childfn()\n}\nso that variables module.exports, require, module, ~__filename, ~__dirname\ncould be used inside of module.js directly. 
+                                    activate pModule
+                                    pModule -> pModule : var child = require("./child.js")
+                                        activate pModule
+                                        FModule <- pModule : Module._load(path='./child.jsi', this);\n//call Module's class methode _load()
+                                            activate FModule
+                                            alt if is cachedModule
+                                                FModule -> pModule : return cachedModule.exports; 
+                                            else required module not cached
+                                                create cModule
+                                                FModule -> cModule : var module = new Module(filename, parent);
+                                                FModule <-- cModule : return module
+                                                FModule -> cModule : module.load(filename);
+                                                cModule -> cModule : load process again with ._compile
+
+                                                FModule <-- cModule : 
+                                                FModule -> pModule : return module.exports;
+                                            end
+                                            deactivate FModule
+                                        deactivate pModule
+                                    pModule -> pModule : child.childfn() \n// child.childfn() could be used from now on.
+                                deactivate pModule
+                            deactivate pModule
+                        FModule <-- pModule : 
+                        deactivate pModule
+                    FModule -> FModule : return module.exports;
+            deactivate FModule
+                    end
+        nodejs <-- FModule
+        deactivate FModule
+    deactivate nodejs
+
+
+@enduml
