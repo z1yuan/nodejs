@@ -1,4 +1,4 @@
-@startuml Nodejs Module call process
+@startuml nodejsModule
 skinparam classAttributeIconSize 0
 /'set namespaceSeparator :: '/
 /'set PLANTUML_LIMIT_SIZE=8192 '/
